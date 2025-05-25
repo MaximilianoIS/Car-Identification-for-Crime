@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="{{ g.locale }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ g._('site_title') }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <style>
+        /* Minor inline styles if needed, prefer style.css */
+        .image-upload-buttons button { margin: 5px; }
+        #videoFrameWrapper {
+            position: relative; /* For absolute positioning of overlays */
+            display: none; /* Initially hidden */
+            margin: 1rem auto;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            overflow: hidden;
+            background-color: rgba(0,0,0,0.2);
+            max-width: 100%; /* Ensure it fits */
+        }
+        #videoFramePreview {
+            display: block;
+            max-width: 100%;
+            max-height: 480px;
+            object-fit: contain;
+            user-select: none;
+            cursor: crosshair;
+            border-radius: 11px;
+        }
+        #videoCropBox { /* This is a .crop-selection-box */
+            /* Styles inherited or defined in style.css */
+        }
+
+    </style>
+</head>
+<body>
+    <div class="language-selector">
+        <a href="{{ url_for('set_lang', lang_code='en') }}" class="{{ 'active' if g.locale == 'en' }}">{{ g._('lang_english') }}</a>
+        <span class="divider">|</span>
+        <a href="{{ url_for('set_lang', lang_code='ko') }}" class="{{ 'active' if g.locale == 'ko' }}">{{ g._('lang_korean') }}</a>
+    </div>
+
+    <div class="container">
+        <h1>{{ g._('site_title') }}</h1>
+
+        <div class="tab-navigation">
+            <button class="tab-button" onclick="openTab(event, 'imageUploadTab')" id="defaultOpenTab">{{ g._('tab_image_upload') }}</button>
+            <button class="tab-button" onclick="openTab(event, 'videoAnalysisTab')">{{ g._('tab_video_analysis') }}</button>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul class="flash-messages">
+            {% for category, message in messages %}
+              <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        <!-- Tab 1: Image Upload -->
+        <div id="imageUploadTab" class="tab-content">
+            <h2>{{ g._('header_image_upload') }}</h2>
+            <form method="POST" enctype="multipart/form-data" action="{{ url_for('predict_image') }}" id="imageUploadForm">
+                <div class="file-input-wrapper">
+                    <label for="image_file_input" class="file-input-label">
+                        <span class="icon">⬆️</span> {{ g._('select_image_label') }}
+                    </label>
+                    <input type="file" name="image_file" id="image_file_input" accept="image/*" required>
+                </div>
+                <div id="image_file_name_display" class="filename"></div>
+                
+                <div id="imagePreviewContainer" style="display:none;">
+                    <img id="imageToCrop" src="#" alt="Preview for cropping">
+                    <div id="cropSelectionDiv" class="crop-selection-box" style="display:none;"></div>
+                </div>
+                <input type="hidden" name="crop_coords" id="crop_coords_input">
+
+                <div class="image-upload-buttons">
+                    <button type="button" id="submitFullImageBtn" style="display:none;">{{ g._('button_identify_full') | default("Identify Full Image", true) }}</button>
+                    <button type="button" id="startCropBtn" style="display:none;">{{ g._('button_start_crop') | default("Crop Image", true) }}</button>
+                    <button type="button" id="submitCroppedImageBtn" style="display:none;">{{ g._('button_identify_crop') | default("Identify Cropped Area", true) }}</button>
+                    <button type="button" id="resetCropBtn" style="display:none;">{{ g._('button_reset_crop') | default("Reset Crop", true) }}</button>
+                </div>
+            </form>
+
+            <div class="result-display" id="imagePredictionResultArea">
+                {% if active_tab == 'image_upload' and image_url %}
+                <h3>{{ g._('result_header') }}</h3>
+                <div class="image-container-with-bbox" style="text-align: center;"> <!-- Added text-align center -->
+                    <img id="resultImageDisplay" src="{{ image_url }}" alt="Processed Image" onload="drawImageBbox()">
+                </div>
+                {% if prediction_data %}
+                    {% if prediction_data.error %}
+                        <p class="prediction-text error-message">{{ prediction_data.error }}</p>
+                    {% elif prediction_data.brand %}
+                        <p class="prediction-text">{{ g._('predicted_brand_is') }} <span>{{ prediction_data.brand }}</span> 
+                            {% if prediction_data.brand_confidence is defined %}
+                                ({{ g._('confidence_prefix') }} {{ "%.2f"|format(prediction_data.brand_confidence * 100) }}%)
+                            {% endif %}
+                        </p>
+                        {% if prediction_data.model %}
+                            <p class="prediction-text">{{ g._('predicted_model_is') }} <span>{{ prediction_data.model }}</span> 
+                                {% if prediction_data.model_confidence is defined %}
+                                   ({{ g._('confidence_prefix') }} {{ "%.2f"|format(prediction_data.model_confidence * 100) }}%)
+                                {% endif %}
+                            </p>
+                        {% elif prediction_data.error_model %}
+                            <p class="prediction-text error-message">{{ prediction_data.error_model }}</p>
+                        {% endif %}
+                    {% else %}
+                        <p class="prediction-text error-message">{{ g._('error_prediction_failed_general') }}</p>
+                    {% endif %}
+                {% endif %}
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Tab 2: Video Analysis -->
+        <div id="videoAnalysisTab" class="tab-content">
+            <h2>{{ g._('header_video_analysis') }}</h2>
+
+            <label for="videoSelector">{{ g._('label_select_video') }}:</label>
+            <select id="videoSelector"></select>
+
+            <div id="videoPlayerContainer">
+                <video id="videoPlayer" controls width="640" playsinline></video> <!-- Added playsinline for mobile -->
+            </div>
+
+            <p class="instructions">{{ g._('video_instructions') | default("Pause the video to capture a frame. You can then draw a crop area on the frame before identifying cars or the selected area.", true) }}</p>
+
+            <div id="videoFrameWrapper"> <!-- Style moved to head for clarity -->
+                <img id="videoFramePreview" alt="Video Frame Preview">
+                <div id="videoCropBox" class="crop-selection-box" style="display:none;"></div> <!-- Crop box for user drawing -->
+                <div id="videoSpinner" class="spinner" style="display:none;"></div>
+                <!-- Bounding boxes and labels for detected cars will be dynamically added here by JS -->
+            </div>
+            
+            <div id="videoButtons" style="display:none; flex-wrap: wrap; justify-content: center; gap: 10px;">
+                <button id="videoIdentifyAllCarsBtn">{{ g._('button_identify_frame') | default("Identify Cars in Frame", true) }}</button>
+                <button id="videoIdentifyCustomCropBtn" style="display:none;">{{ g._('button_video_identify_custom_area') | default("Identify Selected Area", true) }}</button>
+                <button id="videoClearCropBtn" style="display:none;">{{ g._('button_video_clear_crop') | default("Clear Crop Selection", true) }}</button>
+            </div>
+
+            <div id="videoPredictionResultArea" class="result-display" style="display:none; margin-top: 20px;">
+                <!-- Results will be populated here by JavaScript -->
+            </div>
+        </div>
+
+    </div>
+
+<script>
+    // --- Global JS Translations (ensure keys exist in your translations.py or provide defaults) ---
+    const jsTranslations = {
+        predicted_brand_is: "{{ g._('predicted_brand_is') | safe }}",
+        predicted_model_is: "{{ g._('predicted_model_is') | safe }}",
+        confidence_prefix: "{{ g._('confidence_prefix') | safe }}",
+        error_prediction_failed_general: "{{ g._('error_prediction_failed_general') | safe }}",
+        frame_prediction_header: "{{ g._('frame_prediction_header') | default('Frame Prediction Results', true) | safe }}",
+        no_file_selected_js: "{{ g._('no_file_selected_js') | default('No file selected.', true) | safe }}",
+        selected_file_prefix_js: "{{ g._('selected_file_prefix_js') | default('Selected file: ', true) | safe }}",
+        alert_no_crop_selected: "{{ g._('alert_no_crop_selected') | default('No crop area selected or crop area is too small.', true) | safe }}",
+        error_no_videos_found: "{{ g._('error_no_videos_found') | default('No videos found or error loading list.', true) | safe }}",
+        button_video_clear_crop: "{{ g._('button_video_clear_crop') | default('Clear Crop Selection', true) | safe }}", // Used for button text if needed
+        button_video_identify_custom_area: "{{ g._('button_video_identify_custom_area') | default('Identify Selected Area', true) | safe }}",
+        label_custom_area: "{{ g._('label_custom_area') | default('Custom Area', true) | safe }}",
+        label_car_prefix: "{{ g._('label_car_prefix') | default('Car', true) | safe }}",
+        label_no_cars_detected: "{{ g._('label_no_cars_detected') | default('No Cars Detected', true) | safe }}",
+        error_no_cars_found_in_frame: "{{ g._('error_no_cars_found_in_frame') | default('No cars were found in this frame.', true) | safe }}"
+    };
+
+
+    // --- Tab Navigation ---
+    function openTab(evt, tabName) {
+        let i, tabcontent, tablinks;
+        tabcontent = document.getElementsByClassName("tab-content");
+        for (i = 0; i < tabcontent.length; i++) {
+            tabcontent[i].style.display = "none";
+        }
+        tablinks = document.getElementsByClassName("tab-button");
+        for (i = 0; i < tablinks.length; i++) {
+            tablinks[i].className = tablinks[i].className.replace(" active", "");
+        }
+        const currentTabElement = document.getElementById(tabName);
+        if (currentTabElement) {
+            currentTabElement.style.display = "block";
+        } else {
+            console.error("Tab content element not found for:", tabName);
+        }
+
+        if (evt && evt.currentTarget) {
+             evt.currentTarget.className += " active";
+        } else { 
+            const buttonForTab = Array.from(document.querySelectorAll('.tab-button')).find(btn => {
+                const onclickAttr = btn.getAttribute('onclick');
+                return onclickAttr && onclickAttr.includes(`'${tabName}'`);
+            });
+            if (buttonForTab) buttonForTab.className += " active";
+        }
+        sessionStorage.setItem('activeTab', tabName); 
+        console.log("Tab opened:", tabName, "sessionStorage updated.");
+
+        if (tabName === 'imageUploadTab' && serverBboxForImageTab) {
+            setTimeout(() => {
+                const resultImg = document.getElementById('resultImageDisplay');
+                if (resultImg && resultImg.complete && resultImg.offsetWidth > 0) {
+                    drawImageBbox();
+                }
+            }, 100);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const activeTabFromFlask = "{{ active_tab | default('image_upload', true) }}";
+        const storedTabInSessionStorage = sessionStorage.getItem('activeTab');
+        let tabToOpen = storedTabInSessionStorage || activeTabFromFlask; 
+
+        if ("{{ image_url }}" && activeTabFromFlask === 'image_upload') {
+            tabToOpen = 'image_upload';
+        }
+
+        console.log("DOMContentLoaded: activeTabFromFlask =", activeTabFromFlask, ", storedTabInSessionStorage =", storedTabInSessionStorage, ", effective tabToOpen =", tabToOpen);
+
+        const tabButtonToClick = Array.from(document.querySelectorAll('.tab-button')).find(btn => {
+            const onclickAttr = btn.getAttribute('onclick');
+            return onclickAttr && onclickAttr.includes(`'${tabToOpen}'`);
+        });
+
+        if (tabButtonToClick) {
+            tabButtonToClick.click();
+        } else {
+            document.getElementById("defaultOpenTab")?.click();
+        }
+
+        initImageUploadTab();
+        initVideoAnalysisTab(); 
+
+        if (tabToOpen === 'image_upload' && serverBboxForImageTab) {
+            const resultImg = document.getElementById('resultImageDisplay');
+             if (resultImg) { 
+                if (resultImg.complete && resultImg.naturalWidth > 0) {
+                    setTimeout(drawImageBbox, 50); 
+                } else {
+                    resultImg.onload = drawImageBbox; 
+                }
+            }
+        }
+    });
+
+
+    // --- Image Upload Tab (Tab 1) ---
+    const imageFileInput = document.getElementById('image_file_input');
+    const imageNameDisplay = document.getElementById('image_file_name_display');
+    const imagePreviewContainer = document.getElementById('imagePreviewContainer');
+    const imageToCrop = document.getElementById('imageToCrop');
+    const cropCoordsInput = document.getElementById('crop_coords_input');
+
+    const submitFullImageBtn = document.getElementById('submitFullImageBtn');
+    const submitCroppedImageBtn = document.getElementById('submitCroppedImageBtn');
+    const startCropBtn = document.getElementById('startCropBtn');
+    const resetCropBtn = document.getElementById('resetCropBtn');
+
+    let cropSelectionDiv = document.getElementById('cropSelectionDiv');
+    let isCroppingImage = false;
+    let cropStartPoint = {};
+    let currentImageCrop = {};
+
+    function initImageUploadTab() {
+        imageFileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                imageNameDisplay.textContent = `${jsTranslations.selected_file_prefix_js}${file.name}`;
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    imageToCrop.src = event.target.result;
+                    imageToCrop.onload = () => {
+                        if(imageToCrop.naturalWidth === 0) {
+                            console.warn("ImageToCrop naturalWidth is 0 for preview.");
+                        }
+                        imagePreviewContainer.style.display = 'flex';
+                        submitFullImageBtn.style.display = 'inline-block';
+                        startCropBtn.style.display = 'inline-block';
+                        resetImageTabState(false); 
+                    }
+                    imageToCrop.onerror = () => {
+                        console.error("Error loading image into #imageToCrop for preview.");
+                        alert("Error displaying image preview.");
+                        resetImageTabState(true);
+                        imagePreviewContainer.style.display = 'none';
+                        imageNameDisplay.textContent = jsTranslations.no_file_selected_js;
+                        imageFileInput.value = "";
+                    }
+                }
+                reader.readAsDataURL(file);
+            } else {
+                imageNameDisplay.textContent = jsTranslations.no_file_selected_js;
+                imagePreviewContainer.style.display = 'none';
+                resetImageTabState(true);
+            }
+        });
+
+        submitFullImageBtn.addEventListener('click', function() {
+            cropCoordsInput.value = "";
+            document.getElementById('imageUploadForm').submit();
+        });
+
+        startCropBtn.addEventListener('click', function() {
+            isCroppingImage = false; 
+            cropSelectionDiv.style.display = 'none';
+            cropSelectionDiv.style.width = '0px'; cropSelectionDiv.style.height = '0px';
+            currentImageCrop = {};
+            cropCoordsInput.value = "";
+
+            imagePreviewContainer.style.cursor = 'crosshair';
+            imageToCrop.style.cursor = 'crosshair';
+
+            submitCroppedImageBtn.style.display = 'none';
+            resetCropBtn.style.display = 'inline-block';
+            startCropBtn.style.display = 'none';
+            submitFullImageBtn.style.display = 'none';
+
+            imageToCrop.addEventListener('mousedown', handleCropMouseDown);
+        });
+
+        resetCropBtn.addEventListener('click', function(){
+            resetImageTabState(false); 
+            startCropBtn.style.display = 'inline-block';
+            submitFullImageBtn.style.display = 'inline-block';
+        });
+
+        submitCroppedImageBtn.addEventListener('click', function() {
+            if (currentImageCrop.x1_display !== undefined &&
+                (currentImageCrop.x2_display - currentImageCrop.x1_display) > 10 &&
+                (currentImageCrop.y2_display - currentImageCrop.y1_display) > 10) {
+
+                const origW = imageToCrop.naturalWidth;
+                const origH = imageToCrop.naturalHeight;
+                const dispW = imageToCrop.offsetWidth;
+                const dispH = imageToCrop.offsetHeight;
+
+                if (origW === 0 || dispW === 0 || origH === 0 || dispH === 0) {
+                    alert("Error: Image dimensions not fully loaded or zero. Cannot calculate crop.");
+                    return;
+                }
+
+                const scaleX = origW / dispW;
+                const scaleY = origH / dispH;
+
+                let finalX1 = currentImageCrop.x1_display * scaleX;
+                let finalY1 = currentImageCrop.y1_display * scaleY;
+                let finalX2 = currentImageCrop.x2_display * scaleX;
+                let finalY2 = currentImageCrop.y2_display * scaleY;
+
+                const scaled_x1_val = Math.round(Math.min(finalX1, finalX2));
+                const scaled_y1_val = Math.round(Math.min(finalY1, finalY2));
+                const scaled_x2_val = Math.round(Math.max(finalX1, finalX2));
+                const scaled_y2_val = Math.round(Math.max(finalY1, finalY2));
+
+                cropCoordsInput.value = `${scaled_x1_val},${scaled_y1_val},${scaled_x2_val},${scaled_y2_val}`;
+                document.getElementById('imageUploadForm').submit();
+            } else {
+                alert(jsTranslations.alert_no_crop_selected);
+            }
+        });
+    }
+
+    function resetImageTabState(hideAllFileButtons = true){
+        isCroppingImage = false;
+        if(cropSelectionDiv) cropSelectionDiv.style.display = 'none';
+        if(cropCoordsInput) cropCoordsInput.value = '';
+        currentImageCrop = {};
+
+        if(imageToCrop) imageToCrop.style.cursor = 'default';
+        if(imagePreviewContainer) imagePreviewContainer.style.cursor = 'default';
+
+        if(submitCroppedImageBtn) submitCroppedImageBtn.style.display = 'none';
+        if(resetCropBtn) resetCropBtn.style.display = 'none';
+
+        if(hideAllFileButtons){
+            if(startCropBtn) startCropBtn.style.display = 'none';
+            if(submitFullImageBtn) submitFullImageBtn.style.display = 'none';
+        }
+
+        if(imageToCrop) {
+            imageToCrop.removeEventListener('mousedown', handleCropMouseDown);
+        }
+        imagePreviewContainer.removeEventListener('mousemove', handleCropMouseMove);
+        imagePreviewContainer.removeEventListener('mouseup', handleCropMouseUp);
+        imagePreviewContainer.removeEventListener('mouseleave', handleCropMouseLeave);
+    }
+
+    function handleCropMouseDown(e) {
+        e.preventDefault();
+        isCroppingImage = true;
+        const containerRect = imagePreviewContainer.getBoundingClientRect();
+        cropStartPoint.x = e.clientX - containerRect.left;
+        cropStartPoint.y = e.clientY - containerRect.top;
+
+        cropSelectionDiv.style.left = cropStartPoint.x + 'px';
+        cropSelectionDiv.style.top = cropStartPoint.y + 'px';
+        cropSelectionDiv.style.width = '0px';
+        cropSelectionDiv.style.height = '0px';
+        cropSelectionDiv.style.display = 'block';
+
+        imagePreviewContainer.addEventListener('mousemove', handleCropMouseMove);
+        imagePreviewContainer.addEventListener('mouseup', handleCropMouseUp);
+        imagePreviewContainer.addEventListener('mouseleave', handleCropMouseLeave);
+    }
+    
+    function handleCropMouseMove(e) {
+        if (!isCroppingImage) return;
+        const containerRect = imagePreviewContainer.getBoundingClientRect();
+        let currentX = e.clientX - containerRect.left;
+        let currentY = e.clientY - containerRect.top;
+
+        currentX = Math.max(0, Math.min(currentX, imagePreviewContainer.offsetWidth -1)); 
+        currentY = Math.max(0, Math.min(currentY, imagePreviewContainer.offsetHeight -1));
+
+        const width = Math.abs(currentX - cropStartPoint.x);
+        const height = Math.abs(currentY - cropStartPoint.y);
+        const newX = Math.min(currentX, cropStartPoint.x);
+        const newY = Math.min(currentY, cropStartPoint.y);
+
+        cropSelectionDiv.style.left = newX + 'px';
+        cropSelectionDiv.style.top = newY + 'px';
+        cropSelectionDiv.style.width = width + 'px';
+        cropSelectionDiv.style.height = height + 'px';
+    }
+
+    function handleCropMouseLeave(e) {
+        if (isCroppingImage) {
+            handleCropMouseUp(e, true); 
+        }
+    }
+
+    function handleCropMouseUp(e, fromMouseLeave = false) {
+        if (!isCroppingImage && !fromMouseLeave) return;
+        if (isCroppingImage) isCroppingImage = false; 
+
+        imagePreviewContainer.removeEventListener('mousemove', handleCropMouseMove);
+        imagePreviewContainer.removeEventListener('mouseup', handleCropMouseUp);
+        imagePreviewContainer.removeEventListener('mouseleave', handleCropMouseLeave);
+
+        const imageRect = imageToCrop.getBoundingClientRect();
+        const containerRect = imagePreviewContainer.getBoundingClientRect();
+        const imageOffsetX = imageRect.left - containerRect.left;
+        const imageOffsetY = imageRect.top - containerRect.top;
+
+        const selBoxLeftInContainer = parseFloat(cropSelectionDiv.style.left);
+        const selBoxTopInContainer = parseFloat(cropSelectionDiv.style.top);
+        const selBoxWidth = parseFloat(cropSelectionDiv.style.width);
+        const selBoxHeight = parseFloat(cropSelectionDiv.style.height);
+
+        let x1_rel_to_image = selBoxLeftInContainer - imageOffsetX;
+        let y1_rel_to_image = selBoxTopInContainer - imageOffsetY;
+        
+        const intersectX1 = Math.max(0, x1_rel_to_image);
+        const intersectY1 = Math.max(0, y1_rel_to_image);
+        const intersectX2 = Math.min(imageToCrop.offsetWidth, x1_rel_to_image + selBoxWidth);
+        const intersectY2 = Math.min(imageToCrop.offsetHeight, y1_rel_to_image + selBoxHeight);
+
+        const finalCropWidthOnImage = Math.max(0, intersectX2 - intersectX1);
+        const finalCropHeightOnImage = Math.max(0, intersectY2 - intersectY1);
+
+        currentImageCrop.x1_display = intersectX1;
+        currentImageCrop.y1_display = intersectY1;
+        currentImageCrop.x2_display = intersectX1 + finalCropWidthOnImage;
+        currentImageCrop.y2_display = intersectY1 + finalCropHeightOnImage;
+
+        if (finalCropWidthOnImage > 10 && finalCropHeightOnImage > 10) {
+            submitCroppedImageBtn.style.display = 'inline-block';
+        } else {
+            cropSelectionDiv.style.display = 'none';
+            submitCroppedImageBtn.style.display = 'none';
+            if (!fromMouseLeave || (selBoxWidth > 10 && selBoxHeight > 10)) {
+                // alert("Selected crop area is too small or does not sufficiently overlap the image.");
+            }
+            startCropBtn.style.display = 'inline-block';
+            submitFullImageBtn.style.display = 'inline-block';
+            resetCropBtn.style.display = 'none';
+            imagePreviewContainer.style.cursor = 'default';
+            imageToCrop.style.cursor = 'default';
+            imageToCrop.removeEventListener('mousedown', handleCropMouseDown);
+        }
+    }
+
+    var serverBboxForImageTab = {{ bbox | tojson | safe if active_tab == 'image_upload' and bbox else 'null' }};
+    function drawImageBbox() {
+        const imgElement = document.getElementById('resultImageDisplay');
+        if (!imgElement) return;
+        if (!serverBboxForImageTab) return;
+        if (!imgElement.complete || imgElement.naturalWidth === 0) {
+            console.log("drawImageBbox: Result image not ready. Will retry or wait for onload.");
+            if (!imgElement.onload) { 
+                imgElement.onload = () => drawImageBbox(); 
+            }
+            return;
+        }
+        
+        const container = imgElement.parentElement;
+        const oldBbox = container.querySelector('.bounding-box-overlay');
+        if(oldBbox) oldBbox.remove();
+
+        const naturalWidth = imgElement.naturalWidth;
+        const naturalHeight = imgElement.naturalHeight;
+        const displayWidth = imgElement.offsetWidth;
+        const displayHeight = imgElement.offsetHeight;
+
+        if (displayWidth === 0 || displayHeight === 0) {
+            setTimeout(drawImageBbox, 100); 
+            return;
+        }
+
+        const scaleX = displayWidth / naturalWidth;
+        const scaleY = displayHeight / naturalHeight;
+        const [x1, y1, x2, y2] = serverBboxForImageTab;
+
+        const bboxDiv = document.createElement('div');
+        bboxDiv.className = 'bounding-box-overlay';
+        bboxDiv.style.left = (x1 * scaleX) + 'px';
+        bboxDiv.style.top = (y1 * scaleY) + 'px';
+        bboxDiv.style.width = (Math.max(1, (x2 - x1)) * scaleX) + 'px';
+        bboxDiv.style.height = (Math.max(1, (y2 - y1)) * scaleY) + 'px';
+        container.appendChild(bboxDiv);
+    }
+
+
+    // --- Video Analysis Tab (Tab 2) ---
+    function initVideoAnalysisTab() {
+        const videoSelectorEl = document.getElementById('videoSelector');
+        const videoPlayerEl = document.getElementById('videoPlayer');
+        const videoFrameWrapperEl = document.getElementById('videoFrameWrapper');
+        const videoFramePreviewEl = document.getElementById('videoFramePreview');
+        const videoCropBoxEl = document.getElementById('videoCropBox'); // User-drawn crop box
+        const videoSpinnerEl = document.getElementById('videoSpinner');
+        const videoIdentifyAllCarsBtnEl = document.getElementById('videoIdentifyAllCarsBtn');
+        const videoIdentifyCustomCropBtnEl = document.getElementById('videoIdentifyCustomCropBtn');
+        const videoClearCropBtnEl = document.getElementById('videoClearCropBtn');
+        const videoButtonsContainerEl = document.getElementById('videoButtons');
+        const videoPredictionResultAreaEl = document.getElementById('videoPredictionResultArea');
+
+        let isVideoCropping = false;
+        let videoCropStartPoint = {};
+        let currentVideoCropRel = null; // {x1, y1, x2, y2, dispW, dispH} relative to displayed preview
+
+        fetch("{{ url_for('get_videos') }}")
+            .then(response => response.ok ? response.json() : Promise.reject(response))
+            .then(data => {
+                const videos = Array.isArray(data) ? data : (data.videos || []);
+                videoSelectorEl.innerHTML = ""; 
+                if (data.error || videos.length === 0) {
+                    const option = document.createElement('option');
+                    option.textContent = jsTranslations.error_no_videos_found;
+                    videoSelectorEl.appendChild(option);
+                    videoSelectorEl.disabled = true; return;
+                }
+                videoSelectorEl.disabled = false;
+                videos.forEach(videoFilename => {
+                    const option = document.createElement('option');
+                    option.value = videoFilename; option.textContent = videoFilename;
+                    videoSelectorEl.appendChild(option);
+                });
+                if (videoSelectorEl.options.length > 0) {
+                    videoPlayerEl.src = "{{ url_for('static', filename='videos/') }}" + videoSelectorEl.options[0].value;
+                }
+            })
+            .catch(err => {
+                console.error('Error loading video list:', err);
+                videoSelectorEl.innerHTML = "";
+                const option = document.createElement('option');
+                option.textContent = jsTranslations.error_no_videos_found;
+                videoSelectorEl.appendChild(option); videoSelectorEl.disabled = true;
+            });
+
+        videoSelectorEl.addEventListener('change', function() {
+            if (this.value && this.value !== jsTranslations.error_no_videos_found) {
+                videoPlayerEl.src = "{{ url_for('static', filename='videos/') }}" + this.value;
+                hideVideoFrameUIAndResults(); 
+            }
+        });
+        
+        function hideVideoFrameUIAndResults() {
+            videoFrameWrapperEl.style.display = 'none';
+            videoButtonsContainerEl.style.display = 'none';
+            videoPredictionResultAreaEl.style.display = 'none';
+            videoPredictionResultAreaEl.innerHTML = ''; 
+            videoCropBoxEl.style.display = 'none';
+            currentVideoCropRel = null;
+            clearDynamicOverlays(); // Clear any drawn boxes/labels
+        }
+        
+        function clearDynamicOverlays() {
+            const existingOverlays = videoFrameWrapperEl.querySelectorAll('.dynamic-bbox-overlay, .dynamic-bbox-label');
+            existingOverlays.forEach(el => el.remove());
+        }
+
+        videoPlayerEl.addEventListener('play', hideVideoFrameUIAndResults);
+        videoPlayerEl.addEventListener('seeking', hideVideoFrameUIAndResults);
+        videoPlayerEl.addEventListener('emptied', hideVideoFrameUIAndResults);
+        videoPlayerEl.addEventListener('error', () => { 
+            console.error("Video player error."); 
+            hideVideoFrameUIAndResults();
+        });
+
+        videoPlayerEl.addEventListener('pause', () => {
+            if (!videoPlayerEl.videoWidth || !videoPlayerEl.videoHeight || videoPlayerEl.readyState < videoPlayerEl.HAVE_METADATA) {
+                console.warn("Video not ready for frame capture or has zero dimensions.");
+                return;
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width  = videoPlayerEl.videoWidth;
+            canvas.height = videoPlayerEl.videoHeight;
+            canvas.getContext('2d').drawImage(videoPlayerEl, 0, 0, canvas.width, canvas.height);
+            
+            videoFramePreviewEl.src = canvas.toDataURL('image/jpeg', 0.9); // Quality 0.85-0.9 good
+            videoFrameWrapperEl.style.display = 'inline-block'; 
+            videoButtonsContainerEl.style.display = 'flex';    
+            videoIdentifyAllCarsBtnEl.disabled = false;
+            videoIdentifyCustomCropBtnEl.style.display = 'none'; // Hide custom crop btn initially
+            videoClearCropBtnEl.style.display = 'none'; 
+            videoPredictionResultAreaEl.style.display = 'none'; 
+            videoPredictionResultAreaEl.innerHTML = '';
+            currentVideoCropRel = null; 
+            videoCropBoxEl.style.display = 'none'; 
+            clearDynamicOverlays();
+        });
+
+        videoFramePreviewEl.addEventListener('mousedown', e => {
+            if (!videoFramePreviewEl.src || videoFramePreviewEl.style.display === 'none' || videoFrameWrapperEl.style.display === 'none') return;
+            e.preventDefault();
+            isVideoCropping = true;
+            const rect = videoFramePreviewEl.getBoundingClientRect();
+            videoCropStartPoint = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            
+            Object.assign(videoCropBoxEl.style, {
+                left: videoCropStartPoint.x + 'px', top: videoCropStartPoint.y + 'px',
+                width: '0px', height: '0px', display: 'block'
+            });
+            
+            document.addEventListener('mousemove', handleVideoMouseMove);
+            document.addEventListener('mouseup', handleVideoMouseUp);
+        });
+
+        function handleVideoMouseMove(e) {
+            if (!isVideoCropping) return;
+            const rect = videoFramePreviewEl.getBoundingClientRect();
+            const currentX = Math.max(0, Math.min(e.clientX - rect.left, rect.width -1)); // -1 to stay within border
+            const currentY = Math.max(0, Math.min(e.clientY - rect.top, rect.height -1));
+            
+            const newWidth = Math.abs(currentX - videoCropStartPoint.x);
+            const newHeight = Math.abs(currentY - videoCropStartPoint.y);
+            videoCropBoxEl.style.left = Math.min(currentX, videoCropStartPoint.x) + 'px';
+            videoCropBoxEl.style.top = Math.min(currentY, videoCropStartPoint.y) + 'px';
+            videoCropBoxEl.style.width = newWidth + 'px';
+            videoCropBoxEl.style.height = newHeight + 'px';
+        }
+
+        function handleVideoMouseUp(e) {
+            if (isVideoCropping) {
+                isVideoCropping = false;
+                document.removeEventListener('mousemove', handleVideoMouseMove);
+                document.removeEventListener('mouseup', handleVideoMouseUp);
+
+                const rect = videoFramePreviewEl.getBoundingClientRect();
+                const cropX = parseFloat(videoCropBoxEl.style.left);
+                const cropY = parseFloat(videoCropBoxEl.style.top);
+                const cropW = parseFloat(videoCropBoxEl.style.width);
+                const cropH = parseFloat(videoCropBoxEl.style.height);
+
+                if (cropW > 10 && cropH > 10) { 
+                    currentVideoCropRel = { x1: cropX, y1: cropY, x2: cropX + cropW, y2: cropY + cropH, dispW: rect.width, dispH: rect.height };
+                    videoIdentifyCustomCropBtnEl.style.display = 'inline-block';
+                    videoClearCropBtnEl.style.display = 'inline-block';
+                } else {
+                    videoCropBoxEl.style.display = 'none';
+                    currentVideoCropRel = null;
+                    videoIdentifyCustomCropBtnEl.style.display = 'none';
+                    videoClearCropBtnEl.style.display = 'none';
+                }
+            }
+        }
+
+        videoClearCropBtnEl.addEventListener('click', () => {
+            videoCropBoxEl.style.display = 'none';
+            currentVideoCropRel = null;
+            videoIdentifyCustomCropBtnEl.style.display = 'none';
+            videoClearCropBtnEl.style.display = 'none';
+            clearDynamicOverlays(); // Also clear any results that might be tied to this crop
+        });
+
+        async function sendFrameForPrediction(payload) {
+            videoSpinnerEl.style.display = 'block';
+            videoIdentifyAllCarsBtnEl.disabled = true;
+            videoIdentifyCustomCropBtnEl.disabled = true;
+            videoClearCropBtnEl.disabled = true;
+            clearDynamicOverlays(); // Clear old boxes before new prediction
+
+            try {
+                const response = await fetch("{{ url_for('predict_video_frame') }}", {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || `HTTP error ${response.status}`);
+                
+                displayVideoPredictionResults(data.predictions);
+
+            } catch (err) {
+                console.error("Error predicting video frame:", err);
+                videoPredictionResultAreaEl.innerHTML = `<h3>${jsTranslations.frame_prediction_header}</h3><p class="prediction-text error-message">${err.message || jsTranslations.error_prediction_failed_general}</p>`;
+                videoPredictionResultAreaEl.style.display = 'block';
+            } finally {
+                videoSpinnerEl.style.display = 'none';
+                videoIdentifyAllCarsBtnEl.disabled = false;
+                videoIdentifyCustomCropBtnEl.disabled = currentVideoCropRel ? false : true;
+                videoClearCropBtnEl.disabled = currentVideoCropRel ? false : true;
+            }
+        }
+        
+        videoIdentifyAllCarsBtnEl.addEventListener('click', () => {
+            const payload = { image_data_url: videoFramePreviewEl.src };
+            // No crop_coords sent, backend will detect all cars
+            sendFrameForPrediction(payload);
+        });
+
+        videoIdentifyCustomCropBtnEl.addEventListener('click', () => {
+            if (!currentVideoCropRel) {
+                alert(jsTranslations.alert_no_crop_selected);
+                return;
+            }
+            const payload = { image_data_url: videoFramePreviewEl.src };
+            const scaleX = videoFramePreviewEl.naturalWidth / currentVideoCropRel.dispW;
+            const scaleY = videoFramePreviewEl.naturalHeight / currentVideoCropRel.dispH;
+            payload.crop_coords = [
+                Math.round(currentVideoCropRel.x1 * scaleX), Math.round(currentVideoCropRel.y1 * scaleY),
+                Math.round(currentVideoCropRel.x2 * scaleX), Math.round(currentVideoCropRel.y2 * scaleY)
+            ].join(',');
+            sendFrameForPrediction(payload);
+        });
+
+
+        function displayVideoPredictionResults(predictionsArray) {
+            videoPredictionResultAreaEl.innerHTML = ''; // Clear previous text results
+            clearDynamicOverlays(); // Clear previous visual overlays
+
+            const header = document.createElement('h3');
+            header.textContent = jsTranslations.frame_prediction_header;
+            videoPredictionResultAreaEl.appendChild(header);
+
+            if (!predictionsArray || predictionsArray.length === 0) {
+                const pError = document.createElement('p');
+                pError.className = 'prediction-text error-message';
+                pError.textContent = jsTranslations.error_prediction_failed_general; // Or a more specific "no results" message
+                videoPredictionResultAreaEl.appendChild(pError);
+                videoPredictionResultAreaEl.style.display = 'block';
+                return;
+            }
+            
+            const BBOX_COLORS = ['#39ff14', '#ff6347', '#1e90ff', '#ffd700', '#da70d6', '#ff7f50', '#adff2f'];
+
+
+            predictionsArray.forEach((prediction, index) => {
+                const classification = prediction.classification;
+                const predLabelText = prediction.label || `${jsTranslations.label_car_prefix} ${index + 1}`; // Fallback if label missing
+
+                // --- Display Text Results ---
+                const resultItemDiv = document.createElement('div');
+                resultItemDiv.className = 'video-prediction-item';
+                
+                const itemHeader = document.createElement('h4');
+                itemHeader.textContent = predLabelText;
+                resultItemDiv.appendChild(itemHeader);
+
+                if (classification.error) {
+                    const pError = document.createElement('p');
+                    pError.className = 'prediction-text error-message';
+                    pError.textContent = classification.error;
+                    resultItemDiv.appendChild(pError);
+                } else if (classification.brand) {
+                    const pBrand = document.createElement('p');
+                    pBrand.className = 'prediction-text';
+                    let brandText = `${jsTranslations.predicted_brand_is} <span>${classification.brand}</span>`;
+                    if (classification.brand_confidence !== undefined) {
+                        brandText += ` (${jsTranslations.confidence_prefix} ${(classification.brand_confidence * 100).toFixed(2)}%)`;
+                    }
+                    pBrand.innerHTML = brandText;
+                    resultItemDiv.appendChild(pBrand);
+
+                    if (classification.model) {
+                        const pModel = document.createElement('p');
+                        pModel.className = 'prediction-text';
+                        let modelText = `${jsTranslations.predicted_model_is} <span>${classification.model}</span>`;
+                        if (classification.model_confidence !== undefined) {
+                            modelText += ` (${jsTranslations.confidence_prefix} ${(classification.model_confidence * 100).toFixed(2)}%)`;
+                        }
+                        pModel.innerHTML = modelText;
+                        resultItemDiv.appendChild(pModel);
+                    } else if (classification.error_model) {
+                        const pErrorModel = document.createElement('p');
+                        pErrorModel.className = 'prediction-text error-message';
+                        pErrorModel.textContent = classification.error_model;
+                        resultItemDiv.appendChild(pErrorModel);
+                    }
+                } else { // Fallback for unexpected classification structure
+                    const pError = document.createElement('p');
+                    pError.className = 'prediction-text error-message';
+                    pError.textContent = jsTranslations.error_prediction_failed_general;
+                    resultItemDiv.appendChild(pError);
+                }
+                videoPredictionResultAreaEl.appendChild(resultItemDiv);
+
+                // --- Display Visual Bounding Box and Label on Frame Preview ---
+                if (prediction.bbox && prediction.bbox.length === 4) {
+                    const [orig_x1, orig_y1, orig_x2, orig_y2] = prediction.bbox;
+                    const dispW = videoFramePreviewEl.offsetWidth;
+                    const dispH = videoFramePreviewEl.offsetHeight;
+                    const naturalW = videoFramePreviewEl.naturalWidth;
+                    const naturalH = videoFramePreviewEl.naturalHeight;
+
+                    if (naturalW > 0 && naturalH > 0 && dispW > 0 && dispH > 0) {
+                        const scaleXDraw = dispW / naturalW;
+                        const scaleYDraw = dispH / naturalH;
+                        const boxColor = BBOX_COLORS[index % BBOX_COLORS.length];
+
+                        // Bounding Box Overlay
+                        const bboxOverlay = document.createElement('div');
+                        bboxOverlay.className = 'dynamic-bbox-overlay bounding-box-overlay'; 
+                        bboxOverlay.style.left = (orig_x1 * scaleXDraw) + 'px';
+                        bboxOverlay.style.top = (orig_y1 * scaleYDraw) + 'px';
+                        bboxOverlay.style.width = (Math.max(1,(orig_x2 - orig_x1)) * scaleXDraw) + 'px';
+                        bboxOverlay.style.height = (Math.max(1,(orig_y2 - orig_y1)) * scaleYDraw) + 'px';
+                        bboxOverlay.style.borderColor = boxColor;
+                        videoFrameWrapperEl.appendChild(bboxOverlay);
+
+                        // Label Overlay
+                        const labelOverlay = document.createElement('div');
+                        labelOverlay.className = 'dynamic-bbox-label';
+                        labelOverlay.textContent = predLabelText;
+                        labelOverlay.style.position = 'absolute'; // already in CSS but good for clarity
+                        let labelTop = (orig_y1 * scaleYDraw) - 22; // Position above box
+                        if (labelTop < 0) labelTop = (orig_y1 * scaleYDraw) + 5; // If too high, put inside at top
+                        labelOverlay.style.left = (orig_x1 * scaleXDraw) + 'px';
+                        labelOverlay.style.top = labelTop + 'px';
+                        labelOverlay.style.backgroundColor = boxColor;
+                        videoFrameWrapperEl.appendChild(labelOverlay);
+                    }
+                }
+            });
+            videoPredictionResultAreaEl.style.display = 'block';
+        }
+    }
+</script>
+
+</body>
+</html>

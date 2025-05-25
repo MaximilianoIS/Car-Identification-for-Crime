@@ -1,0 +1,24 @@
+audi
+bmw
+cadillac
+chevrolet(gm daewoo)
+ford
+honda
+hyundai
+infiniti
+jeep
+kia
+landrover
+lexus
+mercedes-benz
+mini
+nissan
+peugeot
+porsche
+renault samsung
+ssangyong
+tata daewoo
+tesla
+toyota
+volkswagen
+volvo
