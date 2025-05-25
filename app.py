@@ -1,5 +1,6 @@
 import os, random, uuid, json, base64
 from io import BytesIO
+import gdown
 
 from flask import  Flask, render_template, request, redirect, url_for, flash, session, g, jsonify, current_app
 from werkzeug.utils import secure_filename
@@ -14,6 +15,16 @@ from torchvision import transforms
 from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights # For Car Detection
 from sklearn.preprocessing import LabelEncoder
 from base_model import BrandThenModelClassifier # Make sure base_model.py is accessible
+
+
+# Your model path and Google Drive ID
+file_id = "1Xy22OmFGgbymT8Z7tBymz2Wavk_KSf0W"
+model_path = "brand_classifier_best_27.pth"
+
+# Download the model if it's not already present
+if not os.path.exists(model_path):
+    url = f"https://drive.google.com/uc?id={file_id}"
+    gdown.download(url, model_path, quiet=False)
 
 
 # --- App and General Configuration ---
