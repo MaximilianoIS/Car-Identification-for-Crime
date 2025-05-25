@@ -1,0 +1,8 @@
+Flask>=2.3.0,<3.0
+Werkzeug==2.3.8
+Pillow
+torch
+torchvision
+scikit-learn
+timm
+wandb
